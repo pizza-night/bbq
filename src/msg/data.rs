@@ -10,14 +10,14 @@ pub struct Data {
 }
 
 impl Data {
-    pub fn read_from_stream(stream: &mut TcpStream) -> io::Result<Data> {
+    pub fn read_from_stream(stream: &mut TcpStream, username: &str) -> io::Result<Data> {
         let mut buf = [0; 4];
         match stream.read_exact(&mut buf) {
             Ok(_) => {}
             Err(_) => {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("Error read from {}", stream.peer_addr().unwrap()),
+                    format!("Error read from {}", username),
                 ))
             }
         }
@@ -27,7 +27,7 @@ impl Data {
         match String::from_utf8(buf) {
             Ok(s) => Ok(Data {
                 data: s,
-                source: stream.peer_addr().unwrap().to_string(),
+                source: username.to_string(),
             }),
             Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, e)),
         }

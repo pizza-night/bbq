@@ -1,4 +1,5 @@
 use crate::msg::handle_msg;
+use crate::msg::peer_sharing::PeerSharing;
 use std::collections::HashMap;
 use std::error::Error;
 use std::io::Write;
@@ -8,13 +9,13 @@ use std::thread;
 
 #[derive(Debug, Clone)]
 pub struct Server {
-    pub streams: Arc<Mutex<HashMap<String, TcpStream>>>,
+    pub streams: Arc<Mutex<HashMap<IpAddr, TcpStream>>>,
     pub ip: SocketAddr,
 }
 
 impl Server {
     pub fn new(port: u16) -> Result<Self, Box<dyn Error>> {
-        let streams: Arc<Mutex<HashMap<String, TcpStream>>> = Arc::new(Mutex::new(HashMap::new()));
+        let streams = Default::default();
         let ip = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port);
         Ok(Server { streams, ip })
     }
@@ -28,16 +29,17 @@ impl Server {
         for stream in receiver_listener.incoming() {
             // TODO: Improve Error Handling
             let stream = stream.expect("failed");
-            let stream_clone = stream.try_clone().unwrap();
-            self.streams
-                .lock()
-                .unwrap()
-                .insert(stream.peer_addr().unwrap().to_string(), stream);
+            let mut stream_clone = stream.try_clone().unwrap();
+            let ip = stream.peer_addr().unwrap().ip();
+            let peers = self.streams.lock().unwrap().keys().cloned().collect();
+            self.streams.lock().unwrap().insert(ip, stream);
             // let the receiver connect with the sender
+            let self_clone = self.clone();
             let handle = thread::spawn(move || {
                 //receiver failed to read from the stream
-                handle_msg(stream_clone).unwrap_or_else(|error| eprintln!("{:?}", error))
+                handle_msg(ip, self_clone).unwrap_or_else(|error| eprintln!("{:?}", error))
             });
+            stream_clone.write_all(PeerSharing::create_packet(&peers).as_slice())?;
 
             // Push messages in the order they are sent
             thread_vec.push(handle);
@@ -51,23 +53,26 @@ impl Server {
         // success value
     }
 
-    pub fn add_stream(&mut self, stream: TcpStream) {
-        let stream_clone = stream.try_clone().unwrap();
-        self.streams
-            .lock()
-            .unwrap()
-            .insert(stream.peer_addr().unwrap().to_string(), stream);
+    fn add_stream(&mut self, stream: TcpStream) {
+        let ip = stream.peer_addr().unwrap().ip();
+        self.streams.lock().unwrap().insert(ip, stream);
+        let self_clone = self.clone();
         thread::spawn(move || {
-            handle_msg(stream_clone).unwrap_or_else(|error| eprintln!("{:?}", error))
+            handle_msg(ip, self_clone).unwrap_or_else(|error| eprintln!("{:?}", error))
         });
     }
 
     pub fn connect_to_peers(
         &mut self,
-        clients: Vec<SocketAddr>,
+        clients: Vec<IpAddr>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         for client in clients {
-            let stream = TcpStream::connect(client)?;
+            if self.streams.lock().unwrap().contains_key(&client) {
+                continue;
+            }
+            let Ok(stream) = TcpStream::connect(SocketAddr::new(client, self.ip.port())) else {
+                continue;
+            };
             self.add_stream(stream);
         }
         Ok(())
